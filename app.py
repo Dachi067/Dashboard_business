@@ -2,27 +2,47 @@ import dash
 from dash import dcc, html, Input, Output, State, dash_table
 import dash_bootstrap_components as dbc
 import plotly.express as px
+import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import IsolationForest
+from statsmodels.tsa.seasonal import seasonal_decompose
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 # Charger les données depuis un fichier CSV
 data = pd.read_csv('data/business_data.csv')
 
-# Ajouter une colonne pour la croissance des revenus
+# ➡️ Créer une colonne de croissance des revenus
 data['Croissance'] = data['Revenus'].pct_change() * 100
 
-# Créer les graphiques initiaux
-fig_bar = px.bar(data, x='Mois', y='Revenus', title='Revenus par mois')
-fig_line = px.line(data, x='Mois', y='Revenus', title='Tendance des revenus')
+# ➡️ Préparer les données pour la régression linéaire
+X = np.array(range(len(data))).reshape(-1, 1)
+y = data['Revenus'].values.reshape(-1, 1)
 
-# Créer une application Dash avec Bootstrap
+# ➡️ Créer un modèle de régression linéaire
+model = LinearRegression()
+model.fit(X, y)
+
+# ➡️ Prédiction des revenus
+data['Prédiction'] = model.predict(X)
+
+# ➡️ Détection d'anomalies avec Isolation Forest
+iso_forest = IsolationForest(contamination=0.1)
+data['Anomalie'] = iso_forest.fit_predict(data[['Revenus']])
+data['Anomalie'] = data['Anomalie'].map({1: 'Normal', -1: 'Anomalie'})
+
+# ➡️ Analyse des tendances saisonnières
+decomposition = seasonal_decompose(data['Revenus'], model='additive', period=12)
+
+# ➡️ Créer une application Dash avec Bootstrap
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.CERULEAN])
 
-# Layout du Dashboard
+# ➡️ Layout du Dashboard
 app.layout = dbc.Container([
     dbc.NavbarSimple(
-        brand="Dashboard Business",
-        brand_href="#",
+        brand="Dashboard Business - Analyse Avancée",
         color="primary",
         dark=True,
         className="mb-4"
@@ -46,87 +66,89 @@ app.layout = dbc.Container([
 
         dbc.Col(dbc.Card([
             dbc.CardBody([
-                html.H4("Mois avec le plus haut revenu", className="card-title"),
-                html.H2(f"{data.loc[data['Revenus'].idxmax(), 'Mois']}", className="card-text")
+                html.H4("Anomalies Détectées", className="card-title"),
+                html.H2(f"{(data['Anomalie'] == 'Anomalie').sum()}", className="card-text")
             ])
-        ], color="warning", inverse=True), width=4),
+        ], color="danger", inverse=True), width=4)
     ], className="mb-4"),
 
-    # Filtres
+    # Graphiques principaux
     dbc.Row([
-        dbc.Col(dcc.Dropdown(
-            id='month-dropdown',
-            options=[{'label': month, 'value': month} for month in data['Mois']],
-            value=data['Mois'].unique()[0],
-            multi=True,
-            placeholder="Sélectionner le(s) mois..."
-        ), width=6),
-
-        dbc.Col(dcc.DatePickerRange(
-            id='date-picker',
-            start_date=data['Mois'].iloc[0],
-            end_date=data['Mois'].iloc[-1],
-            display_format='MMM YYYY'
-        ), width=6)
-    ], className="mb-4"),
-
-    # Graphiques
-    dbc.Row([
-        dbc.Col(dcc.Graph(id='bar-chart', figure=fig_bar), width=6),
-        dbc.Col(dcc.Graph(id='line-chart', figure=fig_line), width=6)
-    ], className="mb-4"),
-
-    # Tableau de données interactif
-    dbc.Row([
-        dbc.Col(dash_table.DataTable(
-            id='data-table',
-            columns=[{"name": col, "id": col} for col in data.columns],
-            data=data.to_dict('records'),
-            style_table={'height': '400px', 'overflowY': 'auto'},
-            style_cell={'textAlign': 'center', 'padding': '5px'},
-            style_header={'backgroundColor': '#007bff', 'color': 'white'},
-            sort_action='native',
-            filter_action='native',
-            row_selectable='multi'
-        ), width=12)
+        dbc.Col(dcc.Graph(id='bar-chart'), width=6),
+        dbc.Col(dcc.Graph(id='line-chart'), width=6)
     ]),
 
-    # Bouton d'exportation
+    # Graphique d'anomalies
     dbc.Row([
-        dbc.Col(dbc.Button("Exporter en CSV", id="btn-export", color="primary", className="mt-3"), width=3)
+        dbc.Col(dcc.Graph(id='anomaly-chart'), width=6),
+        dbc.Col(dcc.Graph(id='seasonal-chart'), width=6)
     ])
 ])
 
-# Callback pour filtrer les données par mois
+# ➡️ Callback pour mettre à jour les graphiques
 @app.callback(
     Output('bar-chart', 'figure'),
     Output('line-chart', 'figure'),
-    Input('month-dropdown', 'value')
+    Output('anomaly-chart', 'figure'),
+    Output('seasonal-chart', 'figure'),
+    Input('bar-chart', 'clickData')
 )
-def update_graph(selected_months):
-    if not selected_months:
-        filtered_data = data
-    else:
-        filtered_data = data[data['Mois'].isin(selected_months)]
+def update_graphs(_):
+    # ➡️ Bar chart des revenus par mois
+    fig_bar = px.bar(
+        data,
+        x='Mois',
+        y='Revenus',
+        color='Anomalie',
+        title='Revenus par Mois (Anomalies Incluses)'
+    )
 
-    fig_bar = px.bar(filtered_data, x='Mois', y='Revenus', title='Revenus par mois')
-    fig_line = px.line(filtered_data, x='Mois', y='Revenus', title='Tendance des revenus')
+    # ➡️ Ligne de tendance + prédictions
+    fig_line = go.Figure()
+    fig_line.add_trace(go.Scatter(
+        x=data['Mois'],
+        y=data['Revenus'],
+        mode='lines',
+        name='Revenus réels'
+    ))
+    fig_line.add_trace(go.Scatter(
+        x=data['Mois'],
+        y=data['Prédiction'],
+        mode='lines',
+        line=dict(dash='dot', color='red'),
+        name='Prédictions'
+    ))
+    fig_line.update_layout(title="Tendance des revenus (avec prédictions)")
 
-    return fig_bar, fig_line
+    # ➡️ Graphique d'anomalies
+    fig_anomaly = px.scatter(
+        data,
+        x='Mois',
+        y='Revenus',
+        color='Anomalie',
+        title='Détection d’anomalies',
+        size_max=10
+    )
 
-# Callback pour exporter le fichier CSV
-@app.callback(
-    Output('data-table', 'data'),
-    Input('btn-export', 'n_clicks'),
-    prevent_initial_call=True
-)
-def export_csv(n_clicks):
-    path = 'data/exported_data.csv'
-    data.to_csv(path, index=False)
-    print(f"Fichier exporté : {path}")
-    return data.to_dict('records')
+    # ➡️ Graphique de tendance saisonnière
+    fig_seasonal = go.Figure()
+    fig_seasonal.add_trace(go.Scatter(
+        x=data['Mois'],
+        y=decomposition.trend,
+        mode='lines',
+        name='Tendance'
+    ))
+    fig_seasonal.add_trace(go.Scatter(
+        x=data['Mois'],
+        y=decomposition.seasonal,
+        mode='lines',
+        name='Saisonnalité'
+    ))
+    fig_seasonal.update_layout(title="Analyse des tendances saisonnières")
 
-# Lancer le serveur
+    return fig_bar, fig_line, fig_anomaly, fig_seasonal
+
+
+# ➡️ Lancer le serveur
 if __name__ == '__main__':
     app.run(debug=True)
-
